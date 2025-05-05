@@ -24,8 +24,8 @@ import com.example.spybridge.ml.YoloAnalyzer
 import com.example.spybridge.models.EyeDetection
 import com.example.spybridge.utils.BlinkPattern
 import org.tensorflow.lite.Interpreter
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import java.io.FileInputStream
+import java.nio.channels.FileChannel
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
@@ -80,14 +80,30 @@ class DetectionActivity : AppCompatActivity() {
 
     private fun initYoloAnalyzer() {
         try {
-            // Load model from assets folder
-            val model = assets.open("models/best_saved_model/best_float32.tflite").use { it.readBytes() }
-            val tflite = Interpreter(ByteBuffer.wrap(model).order(ByteOrder.nativeOrder()))
+            // Use MappedByteBuffer approach to load the model
+            val fileDescriptor = assets.openFd("models/best_saved_model/best_float32.tflite")
+            val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
+            val fileChannel = inputStream.channel
+            val startOffset = fileDescriptor.startOffset
+            val declaredLength = fileDescriptor.declaredLength
+            val mappedByteBuffer = fileChannel.map(
+                FileChannel.MapMode.READ_ONLY,
+                startOffset,
+                declaredLength
+            )
+
+            // Configure the Interpreter with options if needed
+            val options = Interpreter.Options()
+            val tflite = Interpreter(mappedByteBuffer, options)
 
             yoloAnalyzer = YoloAnalyzer(tflite)
             updateStatus("Model loaded successfully")
+
+            // Close resources
+            fileDescriptor.close()
+            inputStream.close()
         } catch (e: Exception) {
-            Log.e(TAG, "Error loading YOLO model: ${e.message}")
+            Log.e(TAG, "Error loading YOLO model: ${e.message}", e)
             updateStatus("Error loading model: ${e.message}")
         }
     }

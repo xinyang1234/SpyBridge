@@ -18,12 +18,19 @@ class YoloAnalyzer(private val tflite: Interpreter) {
     private val numChannels = 3
     private val numClasses = 4 // eye, iris, pupil, etc.
     private val numBoxes = 8400 // Model dependent (for YOLOv8n)
-    private val outputSize = 84 // This is model dependent
 
     // Constants
     private val confidenceThreshold = 0.45f
     private val iouThreshold = 0.5f
     private val eyeClassIndices = listOf(0, 1) // Indices for eye classes
+
+    init {
+        // Print input and output tensor info for debugging
+        val inputTensor = tflite.getInputTensor(0)
+        val outputTensor = tflite.getOutputTensor(0)
+        Log.d(TAG, "Input tensor shape: ${inputTensor.shape().contentToString()}")
+        Log.d(TAG, "Output tensor shape: ${outputTensor.shape().contentToString()}")
+    }
 
     // Detect eyes from bitmap
     fun detectEyes(bitmap: Bitmap): List<EyeDetection> {
@@ -31,8 +38,16 @@ class YoloAnalyzer(private val tflite: Interpreter) {
             // Preprocess image
             val inputBuffer = preprocessImage(bitmap)
 
-            // Prepare output buffer
-            val outputBuffer = Array(1) { Array(outputSize) { FloatArray(numBoxes) } }
+            // Get output shape from the model
+            val outputShape = tflite.getOutputTensor(0).shape()
+
+            // Create output buffer with correct shape based on the model
+            // YOLOv8 output is [1, 84, 8400] for 4 classes
+            val outputBuffer = Array(1) {
+                Array(outputShape[1]) {
+                    FloatArray(outputShape[2])
+                }
+            }
 
             // Run inference
             tflite.run(inputBuffer, outputBuffer)
@@ -40,7 +55,8 @@ class YoloAnalyzer(private val tflite: Interpreter) {
             // Process detections
             return processDetections(outputBuffer[0], bitmap.width, bitmap.height)
         } catch (e: Exception) {
-            Log.e(TAG, "Detection error: ${e.message}")
+            Log.e(TAG, "Detection error: ${e.message}", e)
+            e.printStackTrace()
             return emptyList()
         }
     }
@@ -56,6 +72,9 @@ class YoloAnalyzer(private val tflite: Interpreter) {
 
         val pixels = IntArray(inputWidth * inputHeight)
         scaledBitmap.getPixels(pixels, 0, inputWidth, 0, 0, inputWidth, inputHeight)
+
+        // Reset the buffer position
+        byteBuffer.rewind()
 
         for (pixelValue in pixels) {
             // Extract RGB values and normalize to [0,1]
@@ -79,45 +98,57 @@ class YoloAnalyzer(private val tflite: Interpreter) {
     ): List<EyeDetection> {
         val detections = mutableListOf<EyeDetection>()
 
-        for (i in 0 until numBoxes) {
-            // Extract bounding box coordinates (x, y, w, h)
-            val x = outputBuffer[0][i]
-            val y = outputBuffer[1][i]
-            val w = outputBuffer[2][i]
-            val h = outputBuffer[3][i]
+        try {
+            // YOLOv8 output format is [classes+box_params, num_boxes]
+            // First 4 values are box coordinates, next values are class confidences
+            for (i in 0 until numBoxes) {
+                // Find class with highest confidence
+                var maxConfidence = 0f
+                var classId = -1
 
-            // Find class with highest confidence
-            var maxConfidence = 0f
-            var classId = -1
+                for (c in 0 until numClasses) {
+                    val confidence = outputBuffer[c + 4][i]
+                    if (confidence > maxConfidence) {
+                        maxConfidence = confidence
+                        classId = c
+                    }
+                }
 
-            for (c in 0 until numClasses) {
-                val confidence = outputBuffer[c + 4][i]
-                if (confidence > maxConfidence) {
-                    maxConfidence = confidence
-                    classId = c
+                // Filter by confidence threshold and class
+                if (maxConfidence > confidenceThreshold && eyeClassIndices.contains(classId)) {
+                    // Extract bounding box coordinates (x, y, w, h)
+                    val x = outputBuffer[0][i]
+                    val y = outputBuffer[1][i]
+                    val w = outputBuffer[2][i]
+                    val h = outputBuffer[3][i]
+
+                    // Convert normalized coordinates to image coordinates
+                    val xMin = ((x - w / 2) * imageWidth).toInt().coerceIn(0, imageWidth)
+                    val yMin = ((y - h / 2) * imageHeight).toInt().coerceIn(0, imageHeight)
+                    val xMax = ((x + w / 2) * imageWidth).toInt().coerceIn(0, imageWidth)
+                    val yMax = ((y + h / 2) * imageHeight).toInt().coerceIn(0, imageHeight)
+
+                    val width = xMax - xMin
+                    val height = yMax - yMin
+
+                    // Only add valid detections
+                    if (width > 0 && height > 0) {
+                        // Create detection
+                        val detection = EyeDetection(
+                            xMin = xMin,
+                            yMin = yMin,
+                            width = width,
+                            height = height,
+                            confidence = maxConfidence,
+                            classId = classId
+                        )
+
+                        detections.add(detection)
+                    }
                 }
             }
-
-            // Filter by confidence threshold and class
-            if (maxConfidence > confidenceThreshold && eyeClassIndices.contains(classId)) {
-                // Convert normalized coordinates to image coordinates
-                val xMin = ((x - w / 2) * imageWidth).toInt().coerceIn(0, imageWidth)
-                val yMin = ((y - h / 2) * imageHeight).toInt().coerceIn(0, imageHeight)
-                val xMax = ((x + w / 2) * imageWidth).toInt().coerceIn(0, imageWidth)
-                val yMax = ((y + h / 2) * imageHeight).toInt().coerceIn(0, imageHeight)
-
-                // Create detection
-                val detection = EyeDetection(
-                    xMin = xMin,
-                    yMin = yMin,
-                    width = xMax - xMin,
-                    height = yMax - yMin,
-                    confidence = maxConfidence,
-                    classId = classId
-                )
-
-                detections.add(detection)
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing detections: ${e.message}", e)
         }
 
         // Apply non-maximum suppression
