@@ -1,0 +1,21 @@
+<resources>
+    <string name="app_name">Spy Bridge</string>
+    <string name="bridge_cheat_detector">Bridge Cheat Detector</string>
+    <string name="yolo_amp_eye_blink_detection"><![CDATA[YOLO & Eye Blink Detection]]></string>
+    <string name="app_logo">App logo</string>
+    <string name="mulai_deteksi">Mulai Deteksi</string>
+    <string name="deteksi_kecurangan_pada_permainan_kartu_bridge_menggunakan_teknologi_yolo_dan_eye_blink_detection">Deteksi kecurangan pada permainan kartu bridge menggunakan teknologi YOLO dan Eye Blink Detection</string>
+    <string name="eye_detection_icon">Eye detection icon</string>
+    <string name="deteksi_mata">Deteksi Mata</string>
+    <string name="menggunakan_yolo_untuk_mendeteksi_dan_melacak_posisi_mata_pemain">Menggunakan YOLO untuk mendeteksi dan melacak posisi mata pemain</string>
+    <string name="eye_blink_detection_icon">Eye blink detection icon</string>
+    <string name="deteksi_kedipan">Deteksi Kedipan</string>
+    <string name="menghitung_eye_aspect_ratio_ear_untuk_mendeteksi_kedipan_mata">Menghitung Eye Aspect Ratio (EAR) untuk mendeteksi kedipan mata</string>
+    <string name="pattern_analysis_icon">Pattern analysis icon</string>
+    <string name="analisis_pola">Analisis Pola</string>
+    <string name="menganalisis_pola_kedipan_untuk_mengidentifikasi_kode_komunikasi">Menganalisis pola kedipan untuk mengidentifikasi kode komunikasi</string>
+    <string name="anomaly_detection_icon">Anomaly detection icon</string>
+    <string name="deteksi_anomali">Deteksi Anomali</string>
+    <string name="identifikasi_pola_kedipan_yang_mencurigakan">Identifikasi pola kedipan yang mencurigakan</string>
+    <string name="cara_kerja">Cara Kerja</string>
+</resources>
