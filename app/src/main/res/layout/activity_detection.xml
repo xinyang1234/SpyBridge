@@ -55,7 +55,7 @@
         android:background="@drawable/status_background"
         android:paddingHorizontal="16dp"
         android:paddingVertical="8dp"
-        android:text="Status: Model loaded successfully"
+        android:text="Status: Loading model..."
         android:textColor="@color/white"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
@@ -77,12 +77,22 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent">
 
-            <!-- Replace ImageView with PreviewView for CameraX -->
+            <!-- PreviewView for CameraX -->
             <androidx.camera.view.PreviewView
                 android:id="@+id/ivPreview"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:contentDescription="Camera preview"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toTopOf="parent" />
+
+            <!-- Detection Overlay -->
+            <com.example.spybridge.views.DetectionOverlay
+                android:id="@+id/detectionOverlay"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
                 app:layout_constraintBottom_toBottomOf="parent"
                 app:layout_constraintEnd_toEndOf="parent"
                 app:layout_constraintStart_toStartOf="parent"
@@ -192,8 +202,8 @@
 
             <ImageView
                 android:id="@+id/ivEyeStatus"
-                android:layout_width="24dp"
-                android:layout_height="24dp"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
                 android:src="@drawable/visibility_24px"
                 app:layout_constraintBottom_toBottomOf="parent"
                 app:layout_constraintEnd_toEndOf="parent"

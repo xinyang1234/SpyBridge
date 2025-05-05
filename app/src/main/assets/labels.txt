@@ -1,0 +1,4 @@
+iris
+pupil
+drowsy
+awake
