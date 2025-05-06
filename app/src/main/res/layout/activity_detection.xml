@@ -39,7 +39,7 @@
         android:layout_height="wrap_content"
         android:layout_marginEnd="16dp"
         android:background="?attr/selectableItemBackgroundBorderless"
-        android:contentDescription="Refresh button"
+        android:contentDescription="@string/refresh_button"
         android:padding="8dp"
         android:src="@drawable/refresh_24px"
         app:layout_constraintBottom_toBottomOf="@+id/tvDetectionTitle"
@@ -134,6 +134,19 @@
                 android:src="@drawable/remove_24px"
                 app:layout_constraintStart_toStartOf="parent"
                 app:layout_constraintTop_toBottomOf="@+id/btnZoomIn"
+                app:tint="@color/white" />
+
+            <!-- Switch Camera Button -->
+            <ImageButton
+                android:id="@+id/btnSwitchCamera"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_margin="16dp"
+                android:background="@drawable/zoom_button_background"
+                android:contentDescription="Switch Camera"
+                android:src="@drawable/cameraswitch_24px"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/btnZoomOut"
                 app:tint="@color/white" />
 
         </androidx.constraintlayout.widget.ConstraintLayout>

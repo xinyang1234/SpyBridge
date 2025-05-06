@@ -44,6 +44,9 @@ class DetectionActivity : AppCompatActivity() {
     private var currentZoomRatio = 1.0f
     private var maxZoomRatio = 5.0f
 
+    // Camera selection state
+    private var isFrontCamera = true
+
     // Detection state
     private var earValue = 1.0f
     private var suspiciousPattern = false
@@ -138,6 +141,24 @@ class DetectionActivity : AppCompatActivity() {
         binding.btnRefresh.setOnClickListener {
             resetAnalysis()
         }
+
+        // Switch camera button
+        binding.btnSwitchCamera.setOnClickListener {
+            switchCamera()
+        }
+    }
+
+    private fun switchCamera() {
+        isFrontCamera = !isFrontCamera
+
+        // Update button icon based on current camera
+        binding.btnSwitchCamera.setImageResource(
+            if (isFrontCamera) R.drawable.cameraswitch_24px else R.drawable.cameraswitch_24px
+        )
+
+        // Restart camera with new lens facing
+        startCamera()
+        updateStatus("Switched to ${if (isFrontCamera) "front" else "back"} camera")
     }
 
     private fun resetAnalysis() {
@@ -195,8 +216,12 @@ class DetectionActivity : AppCompatActivity() {
                 .setTargetResolution(Size(1280, 720))
                 .build()
 
-            // Select front camera by default
-            val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+            // Select camera based on user preference
+            val cameraSelector = if (isFrontCamera) {
+                CameraSelector.DEFAULT_FRONT_CAMERA
+            } else {
+                CameraSelector.DEFAULT_BACK_CAMERA
+            }
 
             try {
                 // Unbind use cases before rebinding
@@ -210,6 +235,9 @@ class DetectionActivity : AppCompatActivity() {
                 // Get max zoom ratio
                 camera?.let {
                     maxZoomRatio = it.cameraInfo.zoomState.value?.maxZoomRatio ?: 5.0f
+                    // Reset zoom when switching cameras
+                    currentZoomRatio = 1.0f
+                    binding.tvZoom.text = String.format("%.1fx", currentZoomRatio)
                 }
             } catch (exc: Exception) {
                 Log.e(TAG, "Use case binding failed", exc)

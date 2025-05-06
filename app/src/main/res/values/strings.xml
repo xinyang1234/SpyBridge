@@ -18,4 +18,5 @@
     <string name="deteksi_anomali">Deteksi Anomali</string>
     <string name="identifikasi_pola_kedipan_yang_mencurigakan">Identifikasi pola kedipan yang mencurigakan</string>
     <string name="cara_kerja">Cara Kerja</string>
+    <string name="refresh_button">Refresh button</string>
 </resources>
