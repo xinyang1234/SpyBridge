@@ -3,10 +3,13 @@ package com.example.spybridge
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
-import android.util.Size
+import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.Camera
@@ -19,42 +22,40 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.spybridge.databinding.ActivityDetectionBinding
-import com.example.spybridge.ml.BlinkAnalyzer
-import com.example.spybridge.ml.YoloAnalyzer
-import com.example.spybridge.models.EyeDetection
-import com.example.spybridge.utils.BlinkPattern
-import org.tensorflow.lite.Interpreter
-import java.io.FileInputStream
-import java.nio.channels.FileChannel
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import kotlin.math.roundToInt
 
 class DetectionActivity : AppCompatActivity() {
+    private val TAG = "DetectionActivity"
 
     private lateinit var binding: ActivityDetectionBinding
     private lateinit var cameraExecutor: ExecutorService
-    private var imageCapture: ImageCapture? = null
-    private var camera: Camera? = null
-    private var isDetecting = false
-    private val blinkAnalyzer = BlinkAnalyzer()
-    private val blinkEvents = mutableListOf<BlinkPattern.BlinkEvent>()
-    private var lastEyeDetections = listOf<EyeDetection>()
-    private lateinit var yoloAnalyzer: YoloAnalyzer
-    private var currentZoomRatio = 1.0f
-    private var maxZoomRatio = 5.0f
+    private lateinit var detectionManager: DetectionManager
 
-    // Camera selection state
-    private var isFrontCamera = true
+    // Camera variables
+    private var camera: Camera? = null
+    private var preview: Preview? = null
+    private var imageCapture: ImageCapture? = null
+    private var imageAnalyzer: ImageAnalysis? = null
+    private var cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
     // Detection state
-    private var earValue = 1.0f
-    private var suspiciousPattern = false
+    private var isDetectionActive = false
+    private var currentZoom = 1.0f
 
-    companion object {
-        private const val TAG = "DetectionActivity"
-        private const val REQUEST_CODE_PERMISSIONS = 10
-        private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA)
+    // Permissions
+    private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA)
+    private val REQUEST_CODE_PERMISSIONS = 10
+
+    // UI update handler
+    private val handler = Handler(Looper.getMainLooper())
+    private val uiUpdateRunnable = object : Runnable {
+        override fun run() {
+            if (isDetectionActive) {
+                updateDetectionUI()
+                handler.postDelayed(this, 500) // Update UI every 500ms
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,10 +63,10 @@ class DetectionActivity : AppCompatActivity() {
         binding = ActivityDetectionBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Initialize YOLO analyzer
-        initYoloAnalyzer()
+        // Initialize detection manager
+        detectionManager = DetectionManager(this)
 
-        // Check permissions
+        // Request camera permissions
         if (allPermissionsGranted()) {
             startCamera()
         } else {
@@ -74,385 +75,341 @@ class DetectionActivity : AppCompatActivity() {
             )
         }
 
-        // Set up UI elements and listeners
+        // Set up UI elements
         setupUI()
 
-        // Initialize camera executor
+        // Initialize executor
         cameraExecutor = Executors.newSingleThreadExecutor()
-    }
 
-    private fun initYoloAnalyzer() {
-        try {
-            // Use MappedByteBuffer approach to load the model
-            val fileDescriptor = assets.openFd("models/best_saved_model/best_float32.tflite")
-            val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
-            val fileChannel = inputStream.channel
-            val startOffset = fileDescriptor.startOffset
-            val declaredLength = fileDescriptor.declaredLength
-            val mappedByteBuffer = fileChannel.map(
-                FileChannel.MapMode.READ_ONLY,
-                startOffset,
-                declaredLength
-            )
-
-            // Configure the Interpreter with options if needed
-            val options = Interpreter.Options()
-            val tflite = Interpreter(mappedByteBuffer, options)
-
-            yoloAnalyzer = YoloAnalyzer(tflite)
-            updateStatus("Model loaded successfully")
-
-            // Close resources
-            fileDescriptor.close()
-            inputStream.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error loading YOLO model: ${e.message}", e)
-            updateStatus("Error loading model: ${e.message}")
-        }
-    }
-
-    private fun updateStatus(message: String) {
-        runOnUiThread {
-            binding.tvStatus.text = message
+        // Initialize detection manager
+        val initSuccess = detectionManager.initialize()
+        if (initSuccess) {
+            binding.tvStatus.text = "Status: Model loaded successfully"
+        } else {
+            binding.tvStatus.text = "Status: Failed to load model"
         }
     }
 
     private fun setupUI() {
         // Back button
         binding.btnBack.setOnClickListener {
+            stopDetection()
             finish()
-        }
-
-        // Toggle detection button
-        binding.btnStartDetection.setOnClickListener {
-            toggleDetection()
-        }
-
-        // Zoom controls
-        binding.btnZoomIn.setOnClickListener {
-            zoomIn()
-        }
-
-        binding.btnZoomOut.setOnClickListener {
-            zoomOut()
         }
 
         // Refresh button
         binding.btnRefresh.setOnClickListener {
-            resetAnalysis()
+            resetDetection()
         }
 
-        // Switch camera button
-        binding.btnSwitchCamera.setOnClickListener {
-            switchCamera()
+        // Zoom controls
+        binding.btnZoomIn.setOnClickListener {
+            adjustZoom(0.1f)
         }
-    }
 
-    private fun switchCamera() {
-        isFrontCamera = !isFrontCamera
+        binding.btnZoomOut.setOnClickListener {
+            adjustZoom(-0.1f)
+        }
 
-        // Update button icon based on current camera
-        binding.btnSwitchCamera.setImageResource(
-            if (isFrontCamera) R.drawable.cameraswitch_24px else R.drawable.cameraswitch_24px
-        )
-
-        // Restart camera with new lens facing
-        startCamera()
-        updateStatus("Switched to ${if (isFrontCamera) "front" else "back"} camera")
-    }
-
-    private fun resetAnalysis() {
-        blinkEvents.clear()
-        suspiciousPattern = false
-        updateBlinkPattern("No blink data yet")
-        updateStatus("Analysis reset")
-    }
-
-    private fun toggleDetection() {
-        isDetecting = !isDetecting
-
-        if (isDetecting) {
-            binding.btnStartDetection.text = "Stop Detection"
-            binding.btnStartDetection.setBackgroundColor(
-                ContextCompat.getColor(this, R.color.red)
-            )
-            updateStatus("Detection started")
+        // Add a dedicated camera switch button or use a long press on the preview
+        // Option 1: Add a Switch Camera button
+        val switchCameraButton = findViewById<View>(R.id.btnSwitchCamera)
+        if (switchCameraButton != null) {
+            switchCameraButton.setOnClickListener {
+                switchCamera()
+            }
         } else {
-            binding.btnStartDetection.text = "Start Detection"
-            binding.btnStartDetection.setBackgroundColor(
-                ContextCompat.getColor(this, R.color.green)
-            )
-            updateStatus("Detection stopped")
+            // Option 2: If no dedicated button, add a long press listener to the preview
+            binding.ivPreview.setOnLongClickListener {
+                switchCamera()
+                true
+            }
+
+            // Also add a popup message to inform the user about the long press feature
+            Toast.makeText(
+                this,
+                "Long press on preview to switch cameras",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+
+        // Start/Stop detection button
+        binding.btnStartDetection.setOnClickListener {
+            if (isDetectionActive) {
+                stopDetection()
+            } else {
+                startDetection()
+            }
         }
     }
 
+    /**
+     * Switch between front and back camera
+     */
+    private fun switchCamera() {
+        if (isDetectionActive) {
+            // First stop detection to avoid issues
+            stopDetection()
+        }
+
+        cameraSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) {
+            CameraSelector.DEFAULT_FRONT_CAMERA
+        } else {
+            CameraSelector.DEFAULT_BACK_CAMERA
+        }
+
+        // Restart camera with new selector
+        startCamera()
+
+        // Show toast indicating camera switch
+        val cameraName = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
+        Toast.makeText(
+            this,
+            "Switched to $cameraName camera",
+            Toast.LENGTH_SHORT
+        ).show()
+
+        Log.d(TAG, "Switched to $cameraName camera")
+
+        // If detection was active, restart it
+        if (isDetectionActive) {
+            startDetection()
+        }
+    }
+
+    /**
+     * Start the detection process - corresponds to "Tekan tombol start detection" in flowchart
+     */
+    private fun startDetection() {
+        isDetectionActive = true
+        binding.btnStartDetection.text = "Stop Detection"
+        binding.btnStartDetection.backgroundTintList = ContextCompat.getColorStateList(this, R.color.red)
+        binding.btnStartDetection.setIconResource(R.drawable.stop_circle_24px)
+
+        // Step 1: Reset hasil - clear previous results
+        resetDetection()
+
+        // Step 2: Start detection in the manager
+        detectionManager.startDetection()
+
+        // Start UI updates
+        handler.post(uiUpdateRunnable)
+
+        binding.tvStatus.text = "Status: Detection active"
+        Log.d(TAG, "Detection started")
+    }
+
+    /**
+     * Stop the detection process - corresponds to "Stop Deteksi" in flowchart
+     */
+    private fun stopDetection() {
+        isDetectionActive = false
+        binding.btnStartDetection.text = "Start Detection"
+        binding.btnStartDetection.backgroundTintList = ContextCompat.getColorStateList(this, R.color.green)
+        binding.btnStartDetection.setIconResource(R.drawable.play_arrow_24px)
+
+        // Stop detection in manager but preserve detection status
+        val finalStatus = detectionManager.stopDetection()
+
+        // Stop UI updates
+        handler.removeCallbacks(uiUpdateRunnable)
+
+        // Display final result
+        displayFinalResult(finalStatus)
+
+        Log.d(TAG, "Detection stopped with status: $finalStatus")
+    }
+
+    /**
+     * Reset the detection state - corresponds to "reset hasil" in flowchart
+     */
+    private fun resetDetection() {
+        if (isDetectionActive) {
+            // Restart detection to reset state
+            detectionManager.stopDetection()
+            detectionManager.startDetection()
+
+            // Reset UI
+            binding.tvBlinkPatternData.text = "No blink data yet"
+            binding.ivEyeStatus.setImageResource(R.drawable.visibility_24px)
+
+            binding.tvStatus.text = "Status: Detection reset"
+            Log.d(TAG, "Detection reset")
+        }
+    }
+
+    /**
+     * Update detection UI with current results
+     */
+    private fun updateDetectionUI() {
+        val result = detectionManager.getDetectionStatus()
+        val blinkCount = detectionManager.getBlinkCount()
+
+        // Update blink count
+        binding.tvBlinkPatternData.text = "Blinks detected: $blinkCount"
+
+        // Update status based on detection result
+        if (result == "Curang terdeteksi") {
+            // "Curang terdeteksi" matches flowchart output
+            binding.tvBlinkPatternData.text = "Anomalous blink pattern detected!"
+            binding.tvBlinkPatternData.setTextColor(ContextCompat.getColor(this, R.color.red))
+            binding.ivEyeStatus.setImageResource(R.drawable.warning_24px)
+
+            // If cheating detected, auto-stop detection after delay
+            // This matches the automatic flow in the flowchart
+            handler.postDelayed({
+                if (isDetectionActive) {
+                    stopDetection()
+                }
+            }, 3000) // Wait 3 seconds before stopping
+
+        } else {
+            binding.tvBlinkPatternData.setTextColor(ContextCompat.getColor(this, R.color.white))
+            binding.ivEyeStatus.setImageResource(R.drawable.visibility_24px)
+        }
+    }
+
+    /**
+     * Display final detection result - corresponds to "Tampil hasil" in flowchart
+     */
+    private fun displayFinalResult(finalStatus: String) {
+        // Show the final result
+        if (finalStatus == "Curang terdeteksi") {
+            binding.tvStatus.text = "Result: Cheating Detected!"
+            binding.tvStatus.setTextColor(ContextCompat.getColor(this, R.color.red))
+        } else {
+            binding.tvStatus.text = "Result: No Cheating Detected"
+            binding.tvStatus.setTextColor(ContextCompat.getColor(this, R.color.green))
+        }
+
+        Log.d(TAG, "Final result displayed: $finalStatus")
+    }
+
+    /**
+     * Set up camera and image analysis
+     */
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 
         cameraProviderFuture.addListener({
-            // Used to bind the lifecycle of cameras to the lifecycle owner
-            val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
-
-            // Preview
-            val preview = Preview.Builder()
-                .build()
-                .also {
-                    it.setSurfaceProvider(binding.ivPreview.surfaceProvider)
-                }
-
-            // Image analysis for eye detection
-            val imageAnalyzer = ImageAnalysis.Builder()
-                .setTargetResolution(Size(640, 480))
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-                .also {
-                    it.setAnalyzer(cameraExecutor) { imageProxy ->
-                        processImage(imageProxy)
-                    }
-                }
-
-            // Image capture for saving evidence if needed
-            imageCapture = ImageCapture.Builder()
-                .setTargetResolution(Size(1280, 720))
-                .build()
-
-            // Select camera based on user preference
-            val cameraSelector = if (isFrontCamera) {
-                CameraSelector.DEFAULT_FRONT_CAMERA
-            } else {
-                CameraSelector.DEFAULT_BACK_CAMERA
-            }
-
             try {
-                // Unbind use cases before rebinding
+                val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
+
+                // Unbind any bound use cases before rebinding
                 cameraProvider.unbindAll()
 
-                // Bind use cases to camera
-                camera = cameraProvider.bindToLifecycle(
-                    this, cameraSelector, preview, imageCapture, imageAnalyzer
-                )
+                // Set up preview
+                preview = Preview.Builder()
+                    .build()
+                    .also {
+                        it.setSurfaceProvider(binding.ivPreview.surfaceProvider)
+                    }
 
-                // Get max zoom ratio
-                camera?.let {
-                    maxZoomRatio = it.cameraInfo.zoomState.value?.maxZoomRatio ?: 5.0f
-                    // Reset zoom when switching cameras
-                    currentZoomRatio = 1.0f
-                    binding.tvZoom.text = String.format("%.1fx", currentZoomRatio)
+                // Set up image capture
+                imageCapture = ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .build()
+
+                // Set up image analyzer with correct rotation
+                imageAnalyzer = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .setTargetRotation(binding.ivPreview.display.rotation)
+                    .build()
+                    .also {
+                        it.setAnalyzer(cameraExecutor, ImageAnalysis.Analyzer { imageProxy ->
+                            processImage(imageProxy)
+                        })
+                    }
+
+                try {
+                    // Bind use cases to camera
+                    camera = cameraProvider.bindToLifecycle(
+                        this, cameraSelector, preview, imageCapture, imageAnalyzer
+                    )
+
+                    // Reset zoom display
+                    currentZoom = 1.0f
+                    binding.tvZoom.text = "1.0x"
+
+                } catch (e: Exception) {
+                    Log.e(TAG, "Use case binding failed", e)
+                    Toast.makeText(this, "Camera binding failed: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
-            } catch (exc: Exception) {
-                Log.e(TAG, "Use case binding failed", exc)
+            } catch (e: Exception) {
+                Log.e(TAG, "Camera provider failed", e)
+                Toast.makeText(this, "Camera provider failed: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
+    /**
+     * Process camera image for detection
+     * This implements the image analysis part that feeds into the detection flow
+     */
     private fun processImage(imageProxy: ImageProxy) {
-        if (!isDetecting) {
+        try {
+            val bitmap = imageProxyToBitmap(imageProxy)
+            if (bitmap != null && isDetectionActive) {
+                // Process frame with detection manager
+                detectionManager.processFrame(bitmap)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing image: ${e.message}")
+        } finally {
+            // Always close the image proxy
             imageProxy.close()
-            return
-        }
-
-        val rotationDegrees = imageProxy.imageInfo.rotationDegrees
-
-        // Convert to bitmap
-        val bitmap = imageProxyToBitmap(imageProxy)
-        val rotatedBitmap = rotateBitmap(bitmap, rotationDegrees.toFloat())
-
-        // Run YOLO detection
-        val detections = yoloAnalyzer.detectEyes(rotatedBitmap)
-        lastEyeDetections = detections
-
-        // Calculate EAR value
-        if (detections.isNotEmpty()) {
-            earValue = calculateEAR(detections)
-
-            // Check for blink
-            val blinkDetected = blinkAnalyzer.detectBlink(earValue)
-            if (blinkDetected) {
-                val currentTime = System.currentTimeMillis()
-                val blinkEvent = BlinkPattern.BlinkEvent(currentTime, earValue)
-                blinkEvents.add(blinkEvent)
-
-                // Check for suspicious patterns
-                analyzeBlinkPattern()
-            }
-
-            // Update UI with detection info
-            updateDetectionUI(detections, earValue)
-        }
-
-        imageProxy.close()
-    }
-
-    private fun calculateEAR(detections: List<EyeDetection>): Float {
-        var sumEAR = 0f
-        detections.forEach { detection ->
-            val height = detection.height.toFloat()
-            val width = detection.width.toFloat()
-            val ear = height / width
-            sumEAR += ear
-        }
-        return if (detections.isNotEmpty()) sumEAR / detections.size else 1.0f
-    }
-
-    private fun analyzeBlinkPattern() {
-        // Only analyze if we have enough blink events
-        if (blinkEvents.size < 3) return
-
-        // Get recent events (last 30 seconds)
-        val currentTime = System.currentTimeMillis()
-        val recentEvents = blinkEvents.filter {
-            currentTime - it.timestamp < 30000 // 30 seconds
-        }
-
-        // Calculate metrics
-        val count = recentEvents.size
-        val timeSpan = (recentEvents.lastOrNull()?.timestamp ?: currentTime) -
-                (recentEvents.firstOrNull()?.timestamp ?: currentTime)
-        val timeSpanMinutes = timeSpan / 60000.0
-
-        // Blink rate (blinks per minute)
-        val blinkRate = if (timeSpanMinutes > 0) count / timeSpanMinutes else 0.0
-
-        // Check intervals between blinks
-        val intervals = mutableListOf<Long>()
-        for (i in 1 until recentEvents.size) {
-            intervals.add(recentEvents[i].timestamp - recentEvents[i-1].timestamp)
-        }
-
-        // Check for rapid succession blinks (more than 3 blinks within 0.4 seconds)
-        var rapidBlinks = 0
-        val maxBlinkDuration = 400 // 0.4 seconds in milliseconds
-
-        for (i in 0 until intervals.size - 2) {  // Check groups of 3 consecutive blinks
-            if (intervals[i] + intervals[i+1] < maxBlinkDuration) {
-                rapidBlinks++
-            }
-        }
-
-        // Determine if pattern is suspicious
-        suspiciousPattern = when {
-            blinkRate > 50 -> true  // Unusually high blink rate
-            rapidBlinks > 0 -> true // Rapid sequences detected
-            areIntervalsRhythmic(intervals) -> true // Rhythmic pattern
-            else -> false
-        }
-
-        // Update UI with analysis results
-        runOnUiThread {
-            if (suspiciousPattern) {
-                binding.cvWaitingData.setBackgroundColor(
-                    ContextCompat.getColor(this, R.color.red)
-                )
-                updateBlinkPattern("SUSPICIOUS: ${count} blinks, rate: ${blinkRate.roundToInt()} blinks/min")
-            } else {
-                updateBlinkPattern("Normal: ${count} blinks, rate: ${blinkRate.roundToInt()} blinks/min")
-            }
         }
     }
 
-    private fun areIntervalsRhythmic(intervals: List<Long>): Boolean {
-        if (intervals.size < 4) return false
+    /**
+     * Convert ImageProxy to Bitmap
+     */
+    private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
+        try {
+            val buffer = imageProxy.planes[0].buffer
+            val bytes = ByteArray(buffer.capacity())
+            buffer.get(bytes)
 
-        // Check for consistent intervals (rhythmic pattern)
-        val threshold = 50L // Maximum deviation in milliseconds
-
-        // Check subsequences for similar patterns
-        for (i in 0..intervals.size - 3) {
-            val pattern1 = intervals[i]
-
-            // Look for repeating pattern
-            for (j in i + 1..intervals.size - 2) {
-                val pattern2 = intervals[j]
-
-                if (Math.abs(pattern1 - pattern2) < threshold) {
-                    // Found similar intervals - potential code
-                    return true
-                }
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            if (bitmap == null) {
+                Log.e(TAG, "Failed to decode bitmap")
+                return null
             }
-        }
 
-        return false
-    }
+            // Rotate bitmap if needed based on image rotation
+            val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+            val matrix = Matrix()
+            matrix.postRotate(rotationDegrees.toFloat())
 
-    private fun updateBlinkPattern(message: String) {
-        runOnUiThread {
-            binding.tvBlinkPatternData.text = message
+            // Handle mirroring for front camera
+            if (cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA) {
+                matrix.postScale(-1f, 1f)
+            }
 
-            // Update eye status icon
-            binding.ivEyeStatus.setImageResource(
-                if (suspiciousPattern) R.drawable.warning_24px else R.drawable.visibility_24px
+            return Bitmap.createBitmap(
+                bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
             )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error converting image proxy to bitmap: ${e.message}")
+            return null
         }
     }
 
-    private fun updateDetectionUI(detections: List<EyeDetection>, earValue: Float) {
-        runOnUiThread {
-            val confidenceText = if (detections.isNotEmpty()) {
-                val avgConfidence = detections.map { it.confidence }.average()
-                String.format("%.1f%%", avgConfidence * 100)
-            } else {
-                "0%"
-            }
+    /**
+     * Adjust camera zoom level
+     */
+    private fun adjustZoom(delta: Float) {
+        val camera = camera ?: return
 
-            val earText = String.format("EAR: %.2f", earValue)
+        try {
+            val currentZoomRatio = camera.cameraInfo.zoomState.value?.zoomRatio ?: 1f
+            val newZoomRatio = (currentZoomRatio + delta).coerceIn(1f, 5f)
 
-            updateStatus("Detected: ${detections.size} eyes, Conf: $confidenceText, $earText")
-
-            // TODO: Implement drawing of bounding boxes in overlay
-        }
-    }
-
-    private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap {
-        val buffer = imageProxy.planes[0].buffer
-        val bytes = ByteArray(buffer.remaining())
-        buffer.get(bytes)
-
-        // Convert YUV to RGB
-        val yuvImage = android.graphics.YuvImage(
-            bytes,
-            android.graphics.ImageFormat.NV21,
-            imageProxy.width,
-            imageProxy.height,
-            null
-        )
-
-        val out = java.io.ByteArrayOutputStream()
-        yuvImage.compressToJpeg(
-            android.graphics.Rect(0, 0, imageProxy.width, imageProxy.height),
-            100,
-            out
-        )
-
-        val imageBytes = out.toByteArray()
-        return android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-    }
-
-    private fun rotateBitmap(bitmap: Bitmap, rotation: Float): Bitmap {
-        val matrix = Matrix()
-        matrix.postRotate(rotation)
-        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-    }
-
-    private fun zoomIn() {
-        // Increase zoom by 0.5x
-        val newZoom = (currentZoomRatio + 0.5f).coerceAtMost(maxZoomRatio)
-        updateZoom(newZoom)
-    }
-
-    private fun zoomOut() {
-        // Decrease zoom by 0.5x
-        val newZoom = (currentZoomRatio - 0.5f).coerceAtLeast(1.0f)
-        updateZoom(newZoom)
-    }
-
-    private fun updateZoom(zoomRatio: Float) {
-        camera?.let {
-            val cameraControl = it.cameraControl
-            cameraControl.setZoomRatio(zoomRatio)
-            currentZoomRatio = zoomRatio
-
-            // Update zoom UI
-            binding.tvZoom.text = String.format("%.1fx", zoomRatio)
+            camera.cameraControl.setZoomRatio(newZoomRatio)
+            currentZoom = newZoomRatio
+            binding.tvZoom.text = String.format("%.1fx", newZoomRatio)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error adjusting zoom: ${e.message}")
         }
     }
 
@@ -461,20 +418,14 @@ class DetectionActivity : AppCompatActivity() {
     }
 
     override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<String>,
-        grantResults: IntArray
+        requestCode: Int, permissions: Array<String>, grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CODE_PERMISSIONS) {
             if (allPermissionsGranted()) {
                 startCamera()
             } else {
-                Toast.makeText(
-                    this,
-                    "Permissions not granted by the user.",
-                    Toast.LENGTH_SHORT
-                ).show()
+                Toast.makeText(this, "Permissions not granted", Toast.LENGTH_SHORT).show()
                 finish()
             }
         }
@@ -483,5 +434,8 @@ class DetectionActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
+        detectionManager.release()
+        handler.removeCallbacks(uiUpdateRunnable)
+        Log.d(TAG, "Activity destroyed and resources released")
     }
 }
